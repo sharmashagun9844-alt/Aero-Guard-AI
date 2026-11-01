@@ -1,0 +1,14 @@
+{
+  "name": "AeroGuard LSTM RUL regressor",
+  "version": "1.0",
+  "trained_on": "NASA C-MAPSS FD001 (single operating condition, single fault mode)",
+  "description": "Two stacked LSTM layers (128 and 64 units) plus a dense head, reading the last 30 cycles of 24 inputs (3 operational settings, 21 sensors). Trained in Keras, served in plain NumPy.",
+  "target": "Remaining useful life in cycles, capped at 125 during training",
+  "metrics": {
+    "dataset": "FD001 official test set, 100 engines, prediction at each engine's last recorded cycle",
+    "mae_test": 11.17,
+    "rmse_test": 15.4,
+    "nasa_score_test": 440.1
+  },
+  "notes": "Predictions never exceed about 125 cycles because training capped RUL at 125. Engines with fewer than 30 recorded cycles are scored on a padded window (first reading repeated), so their estimates are less reliable. Trained only on FD001 data; accuracy on other engine types or operating conditions is unknown."
+}
