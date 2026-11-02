@@ -1,76 +1,99 @@
 # AeroGuard AI
 
-Predictive-maintenance web app for turbofan engines: a React + Three.js front end, a FastAPI back end, and a trained LSTM for Remaining Useful Life (RUL) predictions on NASA C-MAPSS-style sensor data
-(trained on FD001).
+**Predictive maintenance for jet engines.** Upload engine sensor data and an LSTM neural network estimates each engine's **Remaining Useful Life (RUL)**, the number of operating cycles left before it needs service. The app ranks the fleet by urgency and raises *Act now / Watch / Healthy* alerts.
 
-## What you need to supply
+**Live demo: https://aero-guard-ai-x0r4.onrender.com/**
+(Free hosting: if nobody has visited for a while, the first load can take about a minute.)
 
-| Item | Status | Where it goes |
+![AeroGuard AI architecture](docs/AeroGuard_System_Architecture.png)
+
+## Why this exists
+
+Engines are traditionally serviced on fixed schedules or by fixed gauge limits. A schedule can be too early (wasted engine life) or too late (risk). AeroGuard reads all 24 inputs together as a 30-cycle trend, so maintenance can be planned per engine, with the most urgent engines first. It is decision support: engineers still make the final call.
+
+## Features
+
+- Upload `.csv`, `.txt` or `.tsv` sensor files (up to 20 MB), validated before anything is scored
+- Fleet dashboard: ranked engine list, RUL curve per engine, status alerts, sensor drift flags
+- Interactive 3D engine explorer with a scroll-driven exploded view
+- Honest by design: no result is shown unless the model produced it, and a demo mode is clearly labelled as synthetic data
+
+## Model and results
+
+| Item | Value |
+|---|---|
+| Dataset | NASA C-MAPSS **FD001** (simulated turbofan engines) |
+| Input | Last 30 cycles of 24 values (3 operating settings + 21 sensors) |
+| Target | RUL in cycles, capped at 125 during training |
+| Architecture | LSTM 128 → Dropout → LSTM 64 → Dropout → Dense 32 → Dense 1 (about 129,857 parameters) |
+| Training | MSE loss, Adam (lr 0.001), batch 64, early stopping |
+| Split | By engine: 80 train / 20 validation; official 100-engine test set held out |
+
+| Data | MAE (cycles) | RMSE (cycles) |
 |---|---|---|
-| 3D engine (`engine_model.blend`) | **Included.** Converted to `frontend/public/models/engine.glb` | already in place |
-| Trained LSTM (`rul_lstm.npz`) | **Included.** Converted from your Keras model; runs in plain NumPy, no TensorFlow needed | `backend/models/rul_lstm.npz` |
-| `model_meta.json` | **Included.** Describes the model; FD001 test metrics measured on the official test set | `backend/models/model_meta.json` |
-| `rul_model.joblib` (optional) | A scikit-learn model instead. If this file exists it is used in preference to the LSTM | `backend/models/rul_model.joblib` |
+| Training | 7.38 | 10.06 |
+| Validation | 8.76 | 12.52 |
+| **Official test (100 engines)** | **11.17** | **15.4** |
 
-If no model file is found the API reports `model_ready: false`, uploads are still validated, and **no prediction is ever
-produced or faked**. See `backend/models/README.md` for the accepted model formats. To swap in a retrained LSTM, convert it
-with `python tools/keras_to_npz.py model.keras scaler.joblib`.
+NASA scoring-function result on the test set: **440.1** (lower is better; late predictions are penalized more).
 
-## Run it locally
+The trained weights are stored in `backend/models/rul_lstm.npz` and run in plain NumPy, so the server does not need TensorFlow.
 
-Requirements: Node 20+ (built with 22) and Python 3.11+ (built with 3.13).
+## How it works
+
+1. **Training (notebook):** load data → label RUL (last cycle − cycle, capped at 125) → split by engine → standardize with training statistics → build 30-cycle windows → train the LSTM.
+2. **On upload (backend):** validate the file → scale → build a 30-cycle window for every row → score with the LSTM → take each engine's last cycle as its headline RUL → assign a status (RUL ≤ 30 *Act now*, ≤ 75 *Watch*, otherwise *Healthy*).
+
+The alert limits of 30 and 75 cycles are product defaults, not model outputs. Drift alerts are a simple rule-based check (a sensor moving 3 or more standard deviations from the engine's early baseline).
+
+## Tech stack
+
+- **Frontend:** React, TypeScript, Vite, Tailwind, React Three Fiber, Recharts
+- **Backend:** FastAPI, pandas, NumPy
+- **Deployment:** Docker, Render
+
+## Run locally
+
+Backend (Python 3.11+):
 
 ```bash
-# 1. Backend  (terminal 1)
 cd backend
-python3 -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+python -m venv .venv
+.venv\Scripts\activate        # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --port 8000
+```
 
-# 2. Frontend (terminal 2)
+Frontend (Node 20+), in a second terminal:
+
+```bash
 cd frontend
 npm install
-npm run dev                                             # http://localhost:5173  (proxies /api to :8000)
+npm run dev
 ```
 
-Single-process alternative: `npm run build` in `frontend/`, then run the backend. It serves `frontend/dist` itself at
-http://localhost:8000.
+Open http://localhost:5173 and upload `test_FD001.txt` from the NASA dataset on the Analyze page. With that file you should see 24 *Act now*, 18 *Watch* and 58 *Healthy* engines.
 
-Tests: `cd backend && pytest` (22 tests: API, validation and the LSTM runtime). Front end: `npm run build` (type-checks) and `npm run lint`.
+Tests: `cd backend && pytest`
 
-## Pages
+## Deploy
 
-- `/` Landing: hero with the 3D engine, scroll-driven exploded view, workflow, features.
-- `/explorer` 3D explorer: rotate, zoom, select parts, exploded slider, isolate, auto-rotate, reset. Works from the part
-  list by keyboard. Falls back to a still image if WebGL is unavailable.
-- `/analyze` Upload `.csv/.txt/.tsv` (headers, or the headerless 26-column NASA layout). Client and server validation,
-  clear error states.
-- `/dashboard` Fleet metrics, ranked engine table, RUL curve, alerts, sensor trends. Demonstration data is labelled.
-- `/about` C-MAPSS background, how scoring works, **live** model facts from the API, limitations.
+The included `Dockerfile` builds the frontend and serves it from the FastAPI backend as a single service. On Render: create a Web Service from this repository, choose Docker, and set the health check path to `/api/health`.
 
-## Honesty notes
+## Retrain or replace the model
 
-- Sensor/threshold values on the dashboard come from the API response. "Demo data" is synthetic, generated in the browser,
-  and labelled as such everywhere it appears.
-- Alert thresholds (default 30 and 75 cycles; env vars `AEROGUARD_RUL_CRITICAL`, `AEROGUARD_RUL_WARNING`) are product
-  defaults, not model or NASA values.
-- The headline RUL is the estimate at an engine's last cycle. The LSTM scores each cycle from that engine's previous 30
-  cycles; an engine's first 29 cycles use a padded window (first reading repeated), so early-cycle values are less reliable.
-  A scikit-learn `rul_model.joblib`, if used instead, scores each row independently.
-- The LSTM was trained on FD001 with RUL capped at 125, so it never predicts much above 125 cycles and its accuracy on other
-  engine types or operating conditions (FD002-FD004) is unknown.
-- No accuracy figure appears anywhere unless it is in `model_meta.json`, where it is shown as "written by the model's
-  owner". The figures there (FD001 test MAE 11.17, RMSE 15.4, NASA score 440.1) were measured on the official FD001 test set
-  (100 engines, last cycle) and re-checked against the converted NumPy model.
+1. Train in the notebook (keep the 24 inputs and the 30-cycle window).
+2. Convert the saved model: `python tools/keras_to_npz.py model.keras scaler.joblib`
+3. Update `backend/models/model_meta.json` with metrics you measured, and restart the backend.
 
-## Layout
+## Limitations
 
-```
-backend/   FastAPI app (app/), tests/, models/ (put rul_model.joblib here)
-frontend/  Vite + React + Tailwind v4 + shadcn-style components + React Three Fiber + Recharts + Framer Motion
-assets/source/engine_model.blend   original model
-tools/     keras_to_npz.py (Keras LSTM -> NumPy weights); blend inspection / GLB export scripts (need Blender's bpy)
-```
+- Trained and tested on **FD001 only**, which is simulated data. Accuracy on other engine types, operating conditions (FD002 to FD004) or real engines is unknown.
+- RUL was capped at 125 in training, so predictions rarely exceed about 125 cycles.
+- The model gives a single estimate with no confidence range.
+- An engine's first 29 cycles are scored on a padded window and are less reliable.
+- Scores come from one test set and one training run.
 
-The GLB was exported from the `.blend` and optimised from about 10 MB to 1.5 MB. Re-exporting needs Blender or the `bpy`
-Python package (`tools/export_glb.py`).
+## Data and credits
+
+Dataset: A. Saxena and K. Goebel (2008), *Turbofan Engine Degradation Simulation Data Set*, NASA Ames Prognostics Data Repository. The dataset is not included in this repository; download it from NASA.
